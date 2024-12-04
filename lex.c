@@ -1,3 +1,12 @@
+// Jake Weber
+
+// Lexical Analyzer implementation
+
+// Implement a lexical analyzer for the programming
+// language PL/0. Your program must be capable to read in a source program written in
+// PL/0, identify some errors, and produce, as output, the source program, the source
+// program lexeme table, and the token list.
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
