@@ -1,9 +1,12 @@
-/*
-	Jake Weber
-	HW1
-	Professor Montagne
-	2/2/24
-*/
+Jake Weber
+2/2/24
+
+// P-machine implementation
+	
+// The P-machine is a stack machine that conceptually has one memory area called the process address
+// space (PAS). The process address space is divide into two contiguous segments: the “text”, which
+// contains the instructions for the VM to execute and the “stack,” which is organized as a data-stack
+// to be used by the PM/0 CPU.
 
 #include <stdio.h>
 #include <stdlib.h>
