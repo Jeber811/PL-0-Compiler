@@ -1,7 +1,7 @@
 // Jake Weber
 // 2/16/24
 
-// Lexical Analyzer implementation
+// Lexical Analyzer implementation (Only used as intermediary code for parsercodegen.c)
 
 // Implement a lexical analyzer for the programming
 // language PL/0. Your program must be capable to read in a source program written in
