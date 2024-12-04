@@ -1,3 +1,3 @@
 # PL/0-Compiler
 
-# Compiler built from scratch, starting as an extensive set of instructions
+# Compiler built from scratch, based on the PL/0 programming language/ grammar
