@@ -1,8 +1,8 @@
 // Jake Weber
 // Eduardo Salcedo Fuentes
-// 4/8/24
+// 3/10/24
 
-// Parser/code generator implementation
+// Parser/code generator implementation (Only used as intermediary code for compiler.c)
 
 // Implement a Recursive Descent Parser and Intermediate Code Generator for tiny PL/0
 // code copied over from lex.c
@@ -13,20 +13,18 @@
 #include <ctype.h>
 
 #define NORW 14
-#define IMAX 5
+#define IMAX 32767
 #define CMAX 11
 #define STRMAX 256
 #define CODE_SIZE 1000
-#define MAX_SYMBOL_TABLE_SIZE 500
-#define LVLMAX 3
 
 typedef struct {
-    int kind; // const = 1, var = 2, proc = 3
-    char name[CMAX]; // name up to 11 chars
-    int val; // number (ASCII value)
-    int level; // L level
-    int addr; // M address
-    int mark; // to indicate unavailable or deleted
+int kind; // const = 1, var = 2, proc = 3
+char name[10]; // name up to 11 chars
+int val; // number (ASCII value)
+int level; // L level
+int addr; // M address
+int mark; // to indicate unavailable or deleted
 } symbol;
 
 
@@ -34,9 +32,9 @@ typedef enum {oddsym = 1, identsym = 2, numbersym = 3, plussym = 4, minussym = 5
 multsym = 6, slashsym = 7, fisym = 8, eqlsym = 9, neqsym = 10, lessym = 11, leqsym =
 12, gtrsym = 13, geqsym = 14, lparentsym = 15, rparentsym = 16, commasym = 17,
 semicolonsym = 18, periodsym = 19, becomessym = 20,
-beginsym = 21, endsym = 22, ifsym = 23, thensym = 24, whilesym = 25, dosym = 26, 
+beginsym = 21, endsym = 22, ifsym = 23, thensym = 24, whilesym = 25, dosym = 26,
 callsym = 27, constsym = 28, varsym = 29, procsym = 30, writesym = 31,
-readsym = 32} token_type;
+readsym = 32, elsesym = 33} token_type;
 
 typedef enum { LIT = 1, OPR = 2, LOD = 3, STO = 4, CAL = 5, INC = 6, JMP = 7, JPC = 8, SYS = 9
 } opCode;
@@ -58,26 +56,20 @@ typedef struct IR {
 // Global Variables
 char** tokenList;
 int token = 0;
-symbol symbol_table[MAX_SYMBOL_TABLE_SIZE];
+symbol symbol_table[500];
 int symbolIndex = 0;
 IR text[500];
-int cIdx = 0;
-char *stringBuilder;
-int level = -1;
-int addr = 3;
-int symbolTop = 0;
-int isAssign = 0;
-int numHere = 0;
-//int expressFlag = 0;
-int isrelop = 0;
+int cx = 0;
+int jpcIdx = 0;
 
 /* list of reserved word names */
-char *word[] = { "odd", "begin", "fi", "const", "do", "end", "if", "read", "then", "var", "while", "write", "call", "procedure"};
+char *word[] = { "begin", "fi", "call", "const", "do", "else", "end", "if", "procedure", "read", "then", "var", "while", "write" };
 
 /* internal representation of reserved words */
-int wsym [ ] = { oddsym, beginsym, fisym, constsym, dosym, endsym, ifsym, readsym, thensym, varsym, whilesym, writesym, callsym, procsym};
+int wsym [ ] = { beginsym, fisym, callsym, constsym, dosym, elsesym, endsym, ifsym,
+  procsym, readsym, thensym, varsym, whilesym, writesym};
 
-void printing(token_type *lexeme, char** iden, int lexemeMax, char** intarr, char** substrarr, int skip[]);
+void printing(token_type *lexeme, char** iden, int lexemeMax, int intarr[], char** substrarr, FILE *fp2, int skip[]);
 int isSymbol(char c);
 int isLet(char c);
 int isNum(char c);
@@ -97,23 +89,16 @@ void statement();
 void condition();
 void expression();
 void factor();
-void proc_declaration();
-void printEmit(FILE* fp2);
-void enter(int kind, char* name, int val, int level, int address);
-int find(char* ident);
-int find2(char* ident, int kind);
-int find3(char* ident, int kind);
+void printEmit();
 
 int main(int argc, char** argv) {
+    // Declaring too many variables (lol)
     char words[500];
     token_type *lexeme = malloc(500 * sizeof(token_type)); // Allocate memory for lexeme
-    // HAS TO RUN WITH THE EUSTIS COMMAND: “./a.out input_file.txt”
-    //FILE* fp = fopen("input_file.txt", "r");
     FILE* fp = fopen(argv[1], "r");
-    //FILE* fp2 = fopen("output.txt", "w");
-    FILE* fp2 = fopen("elf.txt", "w");
+    FILE* fp2 = fopen(argv[2], "w");
     char** iden = malloc(500 * sizeof(char*)); // Name array
-    char** intarr = malloc(500 * sizeof(char*)); // int array
+    int* intarr = malloc(500 * sizeof(int)); // int array
     char** substrarr = malloc(500*sizeof(char*)); // char array
     for (int i = 0; i < 500; i++)
         substrarr[i] = malloc (500 * sizeof(char));
@@ -129,14 +114,12 @@ int main(int argc, char** argv) {
     int skip[500];
     skip[0] = -1;
     int skipind = 0;
-    stringBuilder = malloc(30 * sizeof(char));
-    //strcpy(stringBuilder, "Source program:\n\n");
+    //char* error = (char*) malloc (25 * sizeof(char));
+    fprintf(fp2, "Source program:\n");
     char symb[500];
     while(fgets(words, 500, fp) != NULL ) // Loop through current line
     {
-        //printf("%s", words);
-        stringBuilder = realloc(stringBuilder, (strlen(stringBuilder) + strlen(words) + 1) * sizeof(char));
-        strcat(stringBuilder, words);
+        fprintf(fp2, "%s", words);
         count = 0; // Index of token
         while (count != strlen(words)) // Loop through each identifier/ symbol/ operator/ reserved word/ number
         {
@@ -150,7 +133,7 @@ int main(int argc, char** argv) {
                 while (isLet(words[count]) || isNum(words[count])) // Loop through input until there's a symbol or whitespace
                     count++;
                 strcpy(substr, substring(words, start, count));
-                if(count - start > CMAX ) // Error: Name too long
+                if(count - start > CMAX + 1) // Error: Name too long
                 {
                     substr = realloc(substr, strlen(substr) + 24);
                     strcat(substr, "\tError: Name too long\n");
@@ -179,23 +162,21 @@ int main(int argc, char** argv) {
                 }
                 continue;
             } else if(isNum(words[count])) {  // Start of number
+                int num;
                 while (isNum(words[count]))
                     count++;
                 strcpy(substr, substring(words, start, count));
-                if(count - start > IMAX) { // Error: Number too long
+                num = convert(substr);
+                if(num > IMAX) { // Error: Number too long
                     substr = realloc(substr, strlen(substr) + 26);
                     strcat(substr, "\tError: Number too long\n");
                     strcpy(substrarr[substrind++], substr);
                     skip[skipind++] = index;
-                    printf("Error: Number too long\n");
+                    printf("Number too long\n");
                     exit(0);
                     continue;
                 }
-                templen = strlen(substr);
-                intarr[intCount] = malloc(templen + 1);
-                strcpy(intarr[intCount], substr);
-                intarr[intCount][templen] = '\0';
-                intCount++;
+                intarr[intCount++] = num; 
                 lexeme[index++] = numbersym;
             } // Check if a SYMBOL is read:
               // ‘+’, ‘-‘, ‘*’, ‘/’, ‘(‘, ‘)’, ‘=’, ’,’, ‘.’, ‘<’, ‘>’, ‘;’, ’:’ 
@@ -215,14 +196,13 @@ int main(int argc, char** argv) {
                 } else if(words[count] == '/') {
                     if (words[count + 1] == '*') { // Comment found
                         count += 2;
-                        //printf("comment start\n");
                         while (words[count] != '*' ||  words[count + 1] != '/') {
                             count++;
-                            if (words[count] == '\n') {
+                            if (count == strlen(words)) {
                                 fgets(words, 500, fp);
-                                stringBuilder = realloc(stringBuilder, (strlen(stringBuilder) + strlen(words) + 1) * sizeof(char));
-                                strcat(stringBuilder, words);
                                 count = 0;
+                                while(words[0] == '\n')
+                                    fgets(words, 500, fp);
                             }
                         }
                         count += 2;
@@ -291,7 +271,6 @@ int main(int argc, char** argv) {
                         count++;
                     } // Case for " : ", display invalid symbols error message
                     else {
-                        //printf("test\n");
                         for (int i = 0; i < strlen(words); i++)
                             substr[i] = '\0';
                         substr = realloc(substr, strlen(substr) + 25);
@@ -324,54 +303,46 @@ int main(int argc, char** argv) {
     tokenList = malloc(500 * sizeof(char*));
     for (int i = 0; i < 500; i++)
         tokenList[i] = malloc(500 * sizeof(char));
-
+    
     // REAL PRINTING CODE:
-    //printing(lexeme, iden, index, intarr, substrarr, skip);
-    // NO NEED TO PRINT LEXEME TABLE
-    //printing(lexeme, iden, index, intarr, substrarr, skip);
+    printing(lexeme, iden, index, intarr, substrarr, fp2, skip);
 
-
-    // NO LONGER NEED TO PRINT TOKEN LIST
-    //printf("\nToken List:\n");
+    int curSymbolIndex = 0;
+    int symbolFound = -1;
+    fprintf(fp2, "\nToken List:\n");
     int tokenListCount = 0;
     for(int i = 0; i < index ; i++) {
         sprintf(tokenList[tokenListCount], "%d", lexeme[i]);
-        //printf("%s ", tokenList[tokenListCount]);
-        tokenListCount++;
+        fprintf(fp2, "%s ", tokenList[tokenListCount++]);
         if(lexeme[i] == 2) {
             sprintf(tokenList[tokenListCount], "%s", iden[idenCount++]);
-            //printf("%s ", tokenList[tokenListCount]);
-            tokenListCount++;
+            fprintf(fp2, "%s ", tokenList[tokenListCount++]);
         } else if(lexeme[i] == 3) {
-            sprintf(tokenList[tokenListCount], "%s", intarr[intCount++]);
-            //printf("%s ", tokenList[tokenListCount]);
-            tokenListCount++;
+            sprintf(tokenList[tokenListCount], "%d", intarr[intCount++]);
+            fprintf(fp2, "%s ", tokenList[tokenListCount++]);
         }
     }
-    
+
     //Reads and evaluates syntax and checks for eroor
     program ();
     //print code and symbol table
-    printf("%s", stringBuilder);
-    printf("\n\nNo errors, program is syntactically correct\n");
-    printf("\nAssembly Code:\n\n"); 
-    printEmit(fp2);
+    printf("Assembly Code: \n\n"); //printf("%d |\t\t |",)
+    printEmit();
 
-
-    // NO NEED TO PRINT SYMBOL TABLE
-    /*
-    printf("\nSymbol Table: (FOR TESTING, DELETE LATER)\n\n");
+    printf("\nSymbol Table:\n\n");
     printf("Kind | Name\t\t\t| Value | Level | Address | Mark\n");
     printf("-------------------------------------------------\n");
-    for (int i = 0; i < symbolTop; i++) {
+    for (int i = 0; i < symbolIndex; i++) {
         printf("   %d |%13s", symbol_table[i].kind, symbol_table[i].name);
         printf(" |\t  %d |\t  %d", symbol_table[i].val, symbol_table[i].level);
         printf(" |\t\t%d |\t  %d\n", symbol_table[i].addr, symbol_table[i].mark);
     }
-    */
+    //printf("%d |\t\t |",)
+    //printf("Line\tOP\tL\tM\n"); <--- USE LATER
 
-    //printf("%d", symbolIndex);
-
+    //printf("Kind | Name\t\t| Value | Level | Address | Mark\n---------------------------------------");       //printf("%d |\t\t |",)
+    
+                
     // Free all elements
     for (int i = 0; i < 500; i++)
         free(substrarr[i]);
@@ -383,8 +354,6 @@ int main(int argc, char** argv) {
     for (int i = 0; i < idenCount; i++)
         free(iden[i]);
     free(iden);
-    for (int i = 0; i < intCount; i++)
-        free(intarr[i]);
     free(intarr);
     free(lexeme);
 
@@ -395,54 +364,49 @@ int main(int argc, char** argv) {
 
 }
 
-void printing(token_type *lexeme, char** iden, int lexemeMax, char** intarr, char** substrarr, int skip[]) {
-    printf("\n\nLexeme Table:\n");
-    printf("\nlexeme\ttoken type\n");
+void printing(token_type *lexeme, char** iden, int lexemeMax, int intarr[], char** substrarr, FILE *fp2, int skip[]) {
+    fprintf(fp2, "\n\nLexeme Table:\n");
+    fprintf(fp2, "\nlexeme\ttoken type\n");
     int track1 = 0;
     int track2 = 0;
     int track3 = 0;
     int skipind = 0;
     for (int i = 0; i < lexemeMax; i++) { // Loop through every lexeme, print from substrarr (substring array) too
         if(i == skip[skipind]){ // Print error message
-            printf("%s", substrarr[track3++]);
+            fprintf(fp2, "%s", substrarr[track3++]);
             skip[skipind++] = -1;
             i--;
         }
         else if (lexeme[i] == 2) { // Print identifier
-            printf("%s", iden[track1]);
+            fprintf(fp2, "%s", iden[track1]);
             track1++;
-            printf("\t\t2\n");
+            fprintf(fp2, "\t\t2\n");
         } else if (lexeme[i] == 3) { // Print number
-            printf("%s", intarr[track2]);
+            fprintf(fp2, "%d", intarr[track2]);
             track2++;
-            printf("\t\t3\n");
+            fprintf(fp2, "\t\t3\n");
         } else { // Print all other cases (not error, identifier, or number)
-           printf("%s", substrarr[track3]);
+           fprintf(fp2, "%s", substrarr[track3]);
             track3++;
-            if (strlen(substrarr[track3 - 1]) > 5) printf("\t%d\n", lexeme[i]);
-            else printf("\t\t%d\n", lexeme[i]);
+            if (strlen(substrarr[track3 - 1]) > 5) fprintf(fp2, "\t%d\n", lexeme[i]);
+            else fprintf(fp2, "\t\t%d\n", lexeme[i]);
         }
     }
-
 }
-
-//checks if is a symbol
 int isSymbol(char c) {
     //‘+’, ‘-‘, ‘*’, ‘/’, ‘(‘, ‘)’, ‘=’, ’,’ , ‘.’, ‘ <’, ‘>’, ‘;’ , ’:’ 
     if (c == '+'  || c == '-' || c == '*' || c == '/' || c == '(' || c == ')' || c == '=' || c == ',' || c == '.' || c == '<' || c == '>' || c == ';' || c == ':') return 1;
     else return 0;
 }
 
-//Searches for symbol in symbol table
 int symbolTableCheck (char* identifier) {
     for (int i = 0; i < 500; i++) {
-        if (strcmp(identifier, symbol_table[i].name) == 0 && symbol_table[i].level == level )
+        if (strcmp(identifier, symbol_table[i].name) == 0)
             return i;
     }
     return -1;
 }
-
-//Letter check
+    
 int isLet(char c) {
   if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) 
     return 1;
@@ -450,7 +414,6 @@ int isLet(char c) {
     return 0; 
 }
 
-//Number check
 int isNum(char c) {
   if (c >= '0' && c <= '9')
       return 1;
@@ -458,7 +421,6 @@ int isNum(char c) {
       return 0; 
 }
 
-//check if a word is reserved
 int isReserved(char* string){
   for(int i = 0; i < NORW; i++)
     if(strcmp(string, word[i]) == 0){
@@ -467,12 +429,10 @@ int isReserved(char* string){
   return NORW;
 }
 
-//convert a string to a int
 int convert (char* string) {
   return atoi(string);
 }
 
-//take a sub string from start to end of a string
 char* substring(const char* input, int start, int end) {
     int length = end - start;
     char* sub = (char*)malloc((length + 1) * sizeof(char)); // Allocate memory for the substring (+1 for the null terminator)
@@ -486,552 +446,387 @@ char* substring(const char* input, int start, int end) {
 void program () {
     block();
     //check for period at end
-    if (atoi(tokenList[token]) == semicolonsym) {
-        printf("Error: missing declaration before semicolon\n");
-        exit(0);
-    }
-    //printf("%d\n", atoi(tokenList[token]));
-    /*if (symbolIndex > 0) {
-      printf("
-    }*/
     if (atoi(tokenList[token]) != periodsym) {
         printf("Error: program must end with period\n");
         exit(0);
     }
     //emit sys end commands
     emit(SYS, 0, 3);
-    //mark all symbols in main
-    /*for (int i = 0; i < symbolIndex; i++) {
-        if (symbol_table[i].level == 0)
-            symbol_table[i].mark = 1;
-    }*/
 }
 
 //block function
 void block () {
-    level++;
-    addr = 3;
-    int cIdx2, start = 3, holdIdx = cIdx, holdSym = symbolIndex;
-    emit(JMP, 0, 0);
-    //start with jmp as customary
-    //emit(JMP, 0, 3); IDK YET
-    if(level > LVLMAX){
-        printf("Error: Surpassed level limit\n"); //too many procedure calls
-        exit(0);
-    }
+    //start with jmp
+    emit(JMP, 0, 3);
     //declare constants
     const_declaration();
-	if (atoi(tokenList[token]) == constsym) {
-        printf("Error: can't declare const twice\n");
-        exit(0);
-    }
-    //declare vars 
+    //declare vars
     int numVars = var_declaration();
-	if (atoi(tokenList[token]) == varsym || atoi(tokenList[token]) == constsym) {
-        printf("Error: can't declare var/ const twice\n");
-        exit(0);
-    }
-    //declare procedures
-    proc_declaration();
-    if (atoi(tokenList[token]) == constsym || atoi(tokenList[token]) == varsym) {
-        printf("Error: can't declare var/ const twice\n");
-        exit(0);
-    }
-    //mark all symbols in the completed procedure
-    /*for (int i = 0; i < symbolIndex; i++) {
-        if (symbol_table[i].level == level)
-            symbol_table[i].mark = 1;
-    }*/
-    text[holdIdx].M = 3 * cIdx;
-    //symbol_table[holdIdx].addr = cIdx;
-    cIdx2 = cIdx;
-    //increment based on number of vars declared and initial jmp
-    emit(INC, 0, start + numVars);
-    //statements begin
+    //emit inc
+    emit(INC, 0, 3 + numVars);
+    //statement
     statement();
-    if(level != 0)
-        emit(OPR, 0, 0);
-    symbolIndex = holdSym;
-    level--;
 }
 
 void const_declaration () {
-    if (atoi(tokenList[token]) == becomessym) {
-        printf("Error: var must precede becomessym");
-        exit(0);
-    }
     //check for constantsym
     if (atoi(tokenList[token]) == constsym) {
         do {
             // get next token;
             token++;
-            //check for identifier next
+            //check for indentifier next
             if (atoi(tokenList[token]) != identsym) {
-                //error with no identifier
                 printf("Error: const, var, and read keywords must be followed by identifier\n");
                 exit(0);
             }
-            //get next token check constant's name
+
             token++;
-            if (symbolTableCheck(tokenList[token]) != -1 &&  symbol_table[symbolTableCheck(tokenList[token])].kind != 3) {
-                //error if name was already declared
+            if (symbolTableCheck(tokenList[token]) != -1) {
                 printf("Error: symbol name has already been declared\n");
                 exit(0);
             }
-            //save identifier name
+            //save ident name
             char *ident = malloc(12 * sizeof(char));
             ident = tokenList[token];
-
-            // get next token
+            
+            // get next token;
             token++;
-
-            //error if constant is not assigned/followed by equal sign
+            //printf("THIS TOKEN: %s", tokenList[token]);
             if (atoi(tokenList[token]) != eqlsym) {
                 printf("Error: constants must be assigned with =\n");
                 exit(0);
             }
-            // get next token, looking for number now
+            // get next token;
             token++;
-            //error if there's no number after the equals
             if (atoi(tokenList[token]) != numbersym) {
                 printf("Error: constants must be assigned an integer value\n");
                 exit(0);
             }
-            //get next token, which is the number value
             token++;
-            //add constant to symbol table (kind 1, saved name, value, 0, 0, 0)
-            enter(1, ident, atoi(tokenList[token]), level, 0);
-
-            // get next token
+            //add to symbol table (kind 1, saved name, number, 0, 0)
+            symbol_table[symbolIndex].kind = 1;
+            strcpy(symbol_table[symbolIndex].name, ident);
+            symbol_table[symbolIndex].val = atoi(tokenList[token]);
+            symbol_table[symbolIndex].addr = 0;
+            symbol_table[symbolIndex].level = 0;
+            symbol_table[symbolIndex].mark = 0;
+            symbolIndex++;
+            
+            // get next token;
             token++;
         }
-        while (atoi(tokenList[token]) == commasym); //repeat while a comma follows the const declaration
-        //once there are no commas, the declaration should end in a semicolon
+        while (atoi(tokenList[token]) == commasym);
         if (atoi(tokenList[token]) != semicolonsym) {
             printf("Error: constant and variable declarations must be followed by a semicolon\n");
             exit(0);
         }
-        // get next token
+        // get next token;
         token++;
     }
 }
-
-//variable declaration
+            
 int var_declaration () {
-    if (atoi(tokenList[token]) == becomessym) {
-        printf("Error: var must precede becomessym");
-        exit(0);
-    }
-    int numVars = 0; //counts the number of variables declared for the return val
-    //check for varsym to start declaration
+    int numVars = 0;
     if (atoi(tokenList[token]) == varsym) {
         do {
-            //varsym found, count one var
+            //printf("token: %d\n", token);
             numVars++;
-            // get next token
+            // get next token;
             token++;
-            //check for identifier next
+            //check for indentifier next
             if (atoi(tokenList[token]) != identsym) {
-                //error with no identifier
-                printf("Error: const, var, and read keywords must be followed by identifier");
+                printf("Error: const, var, and read keywords must be followed by identifier%d\n", numVars);
                 exit(0);
             }
-            //increment to get identifier name
             token++;
-            int curSymbolIndex = symbolTableCheck(tokenList[token]);
-            //error if already declared
-            if (curSymbolIndex != -1 &&  symbol_table[curSymbolIndex].kind != 3 ) {
+            //printf("token: %d\n", token);
+            //printf("tokenList[token]: %s, numVars: %d\n", tokenList[token], numVars);
+            if (symbolTableCheck(tokenList[token]) != -1) {
                 printf("Error: symbol name has already been declared\n\n");
                 exit(0);
             }
-            //add to symbol table (kind 2, ident, 0, var# + 2, 0, 0)
-            enter(2, tokenList[token], 0, level, numVars + 2);
-
+            //add to symbol table (kind 2, ident, 0, 0, var# + 2)
+            symbol_table[symbolIndex].kind = 2;
+            strcpy(symbol_table[symbolIndex].name, tokenList[token]);
+            symbol_table[symbolIndex].val = 0;
+            symbol_table[symbolIndex].addr = numVars + 2;
+            symbol_table[symbolIndex].level = 0;
+            symbol_table[symbolIndex].mark = 0;
+            symbolIndex++;
+            //printf("   %d",symbol_table[symbolIndex-1].addr);
             // get next token;
             token++;
         }
-        while (atoi(tokenList[token]) == commasym); //repeat while a comma follows the var declaration
-        //once there are no commas, the declaration should end in a semicolon
+        while (atoi(tokenList[token]) == commasym);
         if (atoi(tokenList[token]) != semicolonsym) {
-            printf("Error: constant and variable declarations must be followed by a semicolon");
+            printf("Error: constant and variable declarations must be followed by a semicolon%d\n", numVars);
             exit(0);
         }
         // get next token
         token++;
     }
-    //returns number of variables to prepare to increment space
     return numVars;
 }
 
-void proc_declaration() {
-    if (atoi(tokenList[token]) == becomessym) {
-        printf("Error: var must precede becomessym");
-        exit(0);
-    }
-    while (atoi(tokenList[token]) == procsym) {
-        token++;
-        if (atoi(tokenList[token]) != identsym) {
-            printf("Error: Identifier needed after procedure declaration\n");
-            exit(0);
-        }
-        //increment to get identifier name
-        token++;
-        //error if already declared
-        if (symbolTableCheck(tokenList[token]) != -1 && symbol_table[symbolTableCheck(tokenList[token])].kind == 3) {
-            printf("Error: symbol name has already been declared\n\n");
-            exit(0);
-        }
-        //add to symbol table (kind 3, ident, 0, ?, ?, ?) <---------------IDK YET
-        enter(3, tokenList[token], 0, level, 3 * cIdx);
-        token++;
-        if (atoi(tokenList[token]) != semicolonsym) {
-            printf("Error: Semicolon between statements missing\n");
-            exit(0);
-        }
-        token++;
-        block();
-        if (atoi(tokenList[token]) != semicolonsym) {
-            printf("Error: Semicolon or comma missing\n");
-            exit(0);
-        }
-        token++;
-    }
-}
-
 void statement() {
-    if (atoi(tokenList[token]) == becomessym) {
-        printf("Error: var must precede becomessym");
-        exit(0);
-    }
-    if (atoi(tokenList[token]) == constsym || atoi(tokenList[token]) == varsym) {
-        printf("Error: statement expected\n");
-        exit(0);
-    }
-    if (atoi(tokenList[token]) == identsym) { //if identifer, get next token and check symbol table
+    if (atoi(tokenList[token]) == identsym){
         token++;
-        int curSymbolIndex = find2(tokenList[token], 1);
-        if (curSymbolIndex != -1) {
-            printf("Error: const can't be modified \n");
-            exit(0);
-        }
-        curSymbolIndex = find2(tokenList[token], 3);
-        if (curSymbolIndex != -1 && (find3(tokenList[token], 2) == 0)) {
-            printf("Error: procedure can't be modified \n");
-            exit(0);
-        }
-        curSymbolIndex = find2(tokenList[token], 2);
-        //error if name is undeclared
+        int curSymbolIndex = symbolTableCheck(tokenList[token]);
         if (curSymbolIndex == -1) {
-            printf("Error: undeclared identifier \n");
+            printf("Error: undeclared identifier\n");
             exit(0);
         }
-        //error if identifier is of a constant (or anything other than var)
         if (symbol_table[curSymbolIndex].kind != 2){
             printf("Error: only variable values may be altered\n");
             exit(0);
         }
-        
         // get next token
         token++;
-        //error if identifier is not assigned value with ":="
         if (atoi(tokenList[token]) != becomessym) {
             printf("Error: assignment statements must use :=\n");
             exit(0);
         }
         // get next token
         token++;
-
-        expression(); //at the end of the statement there is an expression, and the res value is stored
-        emit(STO, level - symbol_table[curSymbolIndex].level, symbol_table[curSymbolIndex].addr);
-        //symbol_table[curSymbolIndex].mark = 1;
+        //printf("current token: %s\n", tokenList[token]);
+        expression();
+        //token++;
+        emit(STO, 0, symbol_table[curSymbolIndex].addr);
+        symbol_table[curSymbolIndex].mark = 1;
+        //printf("CHOLE");
         return;
-    } 
-    if (atoi(tokenList[token]) == callsym) { //Procedure call
-        token++;
-        if (atoi(tokenList[token]) != identsym) { 
-            printf("Error: call must be followed by an identifier\n");
-            exit(0);
-        } //if identifer, get next token and check symbol table
-        token++;
-        int curSymbolIndex = find2(tokenList[token], 1);
-        //error if name is undeclared
-        if (curSymbolIndex != -1) {
-            printf("Error: can't call const\n");
-            exit(0);
-        }
-        curSymbolIndex = find2(tokenList[token], 2);
-        //error if name is undeclared
-        if (curSymbolIndex != -1 && find3(tokenList[token], 3) == 0) {
-            printf("Error: can't call variable\n");
-            exit(0);
-        } 
-        curSymbolIndex = find2(tokenList[token], 3);
-        //error if name is undeclared
-        if (curSymbolIndex == -1) {
-            printf("Error: undeclared identifier\n");
-            exit(0);
-        } 
-        //error if identifier is of anything other than procedure
-        if (symbol_table[curSymbolIndex].kind != 3) {
-            printf("Error: Call of a constant or variable is meaningless\n");
-            exit(0);
-        }
-        emit(CAL, level - symbol_table[curSymbolIndex].level, symbol_table[curSymbolIndex].addr);
-        token++;
-        return;
-    } 
-    if (atoi(tokenList[token]) == beginsym) { //if begin, another statement occurs
+    }
+    if (atoi(tokenList[token]) == beginsym){
         do {
             // get next token
             token++;
-
+            //printf("current token: %d\n", atoi(tokenList[token]));
             statement();
-
-        } while (atoi(tokenList[token]) == semicolonsym); //while statements happen (End in semicolon)
-        //error if begin does not have a matching "end"
+            //printf("current token: %d\n", atoi(tokenList[token]));
+        } while (atoi(tokenList[token]) == semicolonsym);
         if (atoi(tokenList[token]) != endsym) {
+            printf("\n\ntokenList[token]: %s\n", tokenList[token]);
             printf("Error: begin must be followed by end\n");
             exit(0);
         }
         // get next token
         token++;
         return;
-    } 
-    if (atoi(tokenList[token]) == ifsym) { //if if found
+    }
+    if (atoi(tokenList[token]) == ifsym){
         // get next token
         token++;
-        //check the condition
         condition();
-        //set the jump index to current index
-        int jpcIdx = cIdx;
-        emit(JPC, 0, jpcIdx);
-        //error if then does not follow if
+        jpcIdx = cx;
+        emit(JPC, 0, 3*jpcIdx);
         if (atoi(tokenList[token]) != thensym) {
             printf("Error: if must be followed by then\n");
             exit(0);
         }
         // get next token
         token++;
-        statement(); //statement within if
-        //error if if does not end with fi
+        statement();
         if (atoi(tokenList[token]) != fisym) {
-             printf("Error: if must end with a fi\n");
+            printf("Error: if must end with a fi\n");
             exit(0);
         }
         token++;
-        //set appropriate index to jump to after recursive calls
-        text[jpcIdx].M = 3 * cIdx;
+        text[jpcIdx].M = cx;
         return;
-    } 
-    if (atoi(tokenList[token]) == whilesym){ //while encountered
+    }
+    if (atoi(tokenList[token]) == whilesym){
         // get next token
         token++;
-        //jump index set to current index
-        int loopIdx = cIdx;
-        condition(); //condition for while
-        if (atoi(tokenList[token]) != dosym) { //error if while does not have do
+        int loopIdx = cx;
+        condition();
+        if (atoi(tokenList[token]) != dosym) {
             printf("Error: while must be followed by do\n");
             exit(0);
         }
         // get next token
         token++;
-        int jpcIdx = cIdx; //set jump condition index to current index
-        emit(JPC, 0, jpcIdx);
+        jpcIdx = cx;
+        emit(JPC, 0, 3*jpcIdx);
         statement();
-        emit(JMP, 0, 3 * loopIdx);
-        //set appropriate index to jump to after recursive calls
-        text[jpcIdx].M = 3 * cIdx;
+        emit(JPC, 0, 3*loopIdx);
+        text[jpcIdx].M = 3*cx;
         return;
-    } 
-    if (atoi(tokenList[token]) == readsym) { //read
+    }
+    if (atoi(tokenList[token]) == readsym) {
         // get next token
         token++;
-        if (atoi(tokenList[token]) != identsym) { //error if identier doesn't follow read
+        if (atoi(tokenList[token]) != identsym) {
             printf("Error: const, var, and read keywords must be followed by identifier\n");
             exit(0);
         }
-        token++; //next token should be the name 
-        int curSymbolIndex = find2(tokenList[token], 2);
-        //error if identifier undeclared
-        if (curSymbolIndex == -1) {
+        symbolIndex = symbolTableCheck(tokenList[token]);
+        if (symbolIndex == -1) {
             printf("Error: undeclared identifier\n");
             exit(0);
         }
-        //error if not variable
-        if (symbol_table[curSymbolIndex].kind != 2) {
+        if (symbol_table[symbolIndex].kind != 2) {
             printf("Error: only variable values may be altered\n");
             exit(0);
         }
         // get next token
         token++;
         emit(SYS, 0, 2);
-        emit (STO, level - symbol_table[curSymbolIndex].level, symbol_table[curSymbolIndex].addr);
+        emit (STO, 0, symbol_table[symbolIndex].addr);
         return;
-    } 
-    if (atoi(tokenList[token]) == writesym) { //write
+    }
+    if (atoi(tokenList[token]) == writesym) {
         // get next token
         token++;
-
         expression();
         emit(SYS, 0, 1);
         return;
     }
-}  
-
+}  // eduardo is a cutie pie
+    
 void condition() {
-    //checks which OPR (operation) is being done
-    isAssign = 0;
-    numHere = 0;
-    isrelop = 0;
     if (atoi(tokenList[token]) == oddsym) {
-        isrelop = 1;
         // get next token
         token++;
         expression();
         emit(ODD, 0, 11);
     } else {
         expression();
-        if (atoi(tokenList[token]) == eqlsym) { //equals
-            isrelop = 1;
+        if (atoi(tokenList[token]) == eqlsym) {
             // get next token
             token++;
             expression();
             emit(EQL, 0, 5);
-        } else if (atoi(tokenList[token]) == neqsym) { //not equals
-            isrelop = 1;
+        } else if (atoi(tokenList[token]) == neqsym) {
             // get next token
             token++;
             expression();
             emit(NEQ, 0, 6);
-        } else if (atoi(tokenList[token]) == lessym) { //less than
-            isrelop = 1;
+        } else if (atoi(tokenList[token]) == lessym) {
             // get next token
             token++;
             expression();
             emit(LSS, 0, 7);
-        } else if (atoi(tokenList[token]) == leqsym) { //less than or equal
-            isrelop = 1;
+        } else if (atoi(tokenList[token]) == leqsym) {
             // get next token
             token++;
             expression();
             emit(LEQ, 0, 8);
-        } else if (atoi(tokenList[token]) == gtrsym) { //greater than
-            isrelop = 1;
+        } else if (atoi(tokenList[token]) == gtrsym) {
             // get next token
             token++;
             expression();
             emit(GTR, 0, 9);
-        } else if (atoi(tokenList[token]) == geqsym) { //greater than or equal
-            isrelop = 1;
+        } else if (atoi(tokenList[token]) == geqsym) {
             // get next token
             token++;
             expression();
             emit(GEQ, 0, 10);
-        } else { //error if condition has no operator
-            if (isAssign) {
-                printf("Error: Use = instead of :=\n");
-                exit(0);
-            }
+        } else {
             printf("Error: condition must contain comparison operator\n");
             exit(0);
         }
     }
-    isAssign = 0;
-    numHere = 0;
-    isrelop = 0;
 }
-
-void expression() {
-    //expressFlag = 0;
-    term(); //expression starts with a term
-    while (atoi(tokenList[token]) == plussym || atoi(tokenList[token]) == minussym) { //looks for + or -
-        if (atoi(tokenList[token]) == plussym) { //plus
+    
+void expression() { // (HINT: modify it to match the grammar)
+    term();
+    while (atoi(tokenList[token]) == plussym || atoi(tokenList[token]) == minussym) {
+        if (atoi(tokenList[token]) == plussym) {
             // get next token
             token++;
-            term(); //term following plus
+            term();
             emit(ADD, 0, 1);
-        } else if (atoi(tokenList[token]) == minussym) { //minus
+        } else if (atoi(tokenList[token]) == minussym) {
             // get next token
             token++;
-            term(); //term following minus
+            term();
             emit(SUB, 0, 2);
+        } else if (atoi(tokenList[token]) == semicolonsym) {
+            //token++;
+            //return;
         }
-    }
-}
-
-void term() {
-    factor(); //term starts with factor
-    while (atoi(tokenList[token]) == multsym || atoi(tokenList[token]) == slashsym) { //look for * or /
-        if (atoi(tokenList[token]) == multsym) { //multiplication
+        /*  else if (atoi(tokenList[token]) == multsym) {
             // get next token
             token++;
-            factor(); //factor following *
+            term();
+            emit(MUL, 0, 3);
+        }  else if (atoi(tokenList[token]) == slashsym) {
+            // get next token
+            token++;
+            term();
+            emit(DIV, 0, 4);
+        }*/
+    }
+    //token++;
+    //printf("expression: current token: %s\n", tokenList[token]);
+}
+    
+void term() {
+    factor();
+    //printf("\ncur token before hold: %d\n", atoi(tokenList[token]));
+    while (atoi(tokenList[token]) == multsym || atoi(tokenList[token]) == slashsym) { // IGNORE modsym
+        if (atoi(tokenList[token]) == multsym) {
+            // get next token
+            token++;
+            factor();
+            //printf("\nCUR TOKEN IN LOOP TERM1: %d\n", atoi(tokenList[token]));
             emit(MUL, 0, 3);
         }
-        else if (atoi(tokenList[token]) == slashsym) { //division
+        else if (atoi(tokenList[token]) == slashsym) {
             // get next token
             token++;
-            factor(); //factor following slash
+            factor();
+            //printf("\nCUR TOKEN IN LOOP TERM2: %d\n", atoi(tokenList[token]));
             emit(DIV, 0, 4);
         }
     }
+    //printf("\nCUR TOKEN IN TERM: %d\n", atoi(tokenList[token]));
 }
-
+    //Wo ai ni
 void factor() {
-    //check for identifier
+    //printf("token: %s\n", tokenList[token]);
     if(atoi(tokenList[token]) == identsym) {
         token++;
-        int curSymbolIndex = find(tokenList[token]);
-        if (curSymbolIndex == -1) { //error if not declared
-            printf("Error: undeclared identifier\n");
+        //printf("oh %s oh\n", tokenList[token]);
+        int curSymbolIndex = symbolTableCheck(tokenList[token]);
+        if (curSymbolIndex == -1) {
+            printf("Error: undeclared indentifier\n");
             exit(0);
         }
-        if (symbol_table[curSymbolIndex].kind == 3) {
-            printf("Error: Expression must not contain a procedure identifier\n");
-            exit(0);
-        }
-        if (symbol_table[curSymbolIndex].kind == 1) { // constant leads to LIT
+        if (symbol_table[curSymbolIndex].kind == 1) { // const
             emit(LIT, 0, symbol_table[curSymbolIndex].val);
-            //symbol_table[curSymbolIndex].mark = 1;
-        } else { // variable leads to LOD
-            emit(LOD, level - symbol_table[curSymbolIndex].level, symbol_table[curSymbolIndex].addr);
-            //symbol_table[curSymbolIndex].mark = 1;
+            symbol_table[curSymbolIndex].mark = 1;
+        } else { // var
+            //printf("CHOLE\n");
+            emit(LOD,  0, symbol_table[curSymbolIndex].addr);
+            symbol_table[curSymbolIndex].mark = 1;
         }
         // get next token
         token++;
-        numHere= 1;
-        if (atoi(tokenList[token]) == becomessym)
-            isAssign = 1;
-    } else if (atoi(tokenList[token]) == numbersym) { //otherwise check for number
+    } else if (atoi(tokenList[token]) == numbersym) {
+        //printf("NUMBERSYM IN FACTOR\n");
         token++;
         emit(LIT, 0, atoi(tokenList[token]));
         // get next token
         token++;
-        numHere = 1;
+        //printf("tokenHERUIFBS YES: %s\n", tokenList[token]);
         return;
-    } else if (atoi(tokenList[token]) == lparentsym) { //left parentheses
+    } else if (atoi(tokenList[token]) == lparentsym) {
         // get next token
         token++;
         expression();
-        if (atoi(tokenList[token]) != rparentsym) { //left parentheses needs to have end parentheses after expression
+        if (atoi(tokenList[token]) != rparentsym) {
             printf("Error: right parenthesis must follow left parenthesis\n");
             exit(0);
         }
         // get next token
         token++;
-    } else { //error if nothing is found
-        if (atoi(tokenList[token - 1]) == becomessym || atoi(tokenList[token - 1]) == lparentsym) {
-            printf("Error: An expression cannot begin with this symbol\n");
-            exit(0);
-        }
-        if (isrelop == 1 || atoi(tokenList[token - 1]) == ifsym || atoi(tokenList[token - 1]) == whilesym) {
-            printf("Error: An expression cannot begin with this symbol\n");
-            exit(0);
-        }
-        if (numHere) {
-            printf("Error: = must be followed by a number\n");
-            exit(0);
-        }
+    //else if (atoi(tokenList[token]) == semicolonsym) {
+        //token++;
+        //return;
+    } else {
+        //return;
+        //printf("ABOVE ARITH\ttoken: %s\n", tokenList[token] );
         printf("Error: arithmetic equations must contain operands, parentheses, numbers, or symbols\n");
         exit(0);
     }
@@ -1039,70 +834,19 @@ void factor() {
 
     //copy IRs
 void emit(int op, int L, int M) {
-    strcpy(text[cIdx].op, opCodeNames[op]); // opcode
-    text[cIdx].L = L; // lexicographical level
-    text[cIdx].M = M; // modifier
-    cIdx++;
+    strcpy(text[cx].op, opCodeNames[op]); // opcode
+    text[cx].L = L; // lexicographical level
+    text[cx].M = M; // modifier
+    cx++;
 }
 
     //print emit table
-void printEmit(FILE* fp2) {
+void printEmit() {
     printf("Line\tOP\t\tL\t\tM\n");
-    for(int i = 0; i < cIdx; i++) {
+    for(int i = 0; i < cx; i++) {
         if (strlen(text[i].op) >= 4)
             printf(" %d\t\t%s\t%d\t\t%d\n", i , text[i].op, text[i].L, text[i].M );
         else
             printf(" %d\t\t%s\t\t%d\t\t%d\n", i , text[i].op, text[i].L, text[i].M );
-
-        int tempOp;
-        if (strcmp(text[i].op, "LIT") == 0) tempOp = 1;
-        else if (strcmp(text[i].op, "OPR") == 0) tempOp = 2;
-        else if (strcmp(text[i].op, "LOD") == 0) tempOp = 3;
-        else if (strcmp(text[i].op, "STO") == 0) tempOp = 4;
-        else if (strcmp(text[i].op, "CAL") == 0) tempOp = 5;
-        else if (strcmp(text[i].op, "INC") == 0) tempOp = 6;
-        else if (strcmp(text[i].op, "JMP") == 0) tempOp = 7;
-        else if (strcmp(text[i].op, "JPC") == 0) tempOp = 8;
-        else if (strcmp(text[i].op, "SYS") == 0) tempOp = 9;
-        fprintf(fp2, "%d %d %d", tempOp, text[i].L, text[i].M);
-        if (i != cIdx - 1) fprintf(fp2, "\n");
     }
-}
-
-void enter(int kind, char* name, int val, int level, int address){
-    symbol_table[symbolIndex].kind = kind;
-    strcpy(symbol_table[symbolIndex].name, name);
-    symbol_table[symbolIndex].val = val;
-    symbol_table[symbolIndex].level = level;
-    symbol_table[symbolIndex].addr = address;
-    symbol_table[symbolIndex].mark = 0;
-    symbolIndex++;
-    symbolTop++;
-    addr++;
-}
-int find3(char* ident, int kind) {
-    for(int i = symbolIndex - 1; i >= 0; i--){
-        if(strcmp(symbol_table[i].name,ident) == 0 && symbol_table[i].kind == kind) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-int find2(char* ident, int kind) {
-    for(int i = symbolIndex - 1; i >= 0; i--){
-        if(strcmp(symbol_table[i].name,ident) == 0 && symbol_table[i].kind == kind) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-int find(char* ident){
-    for(int i = symbolIndex - 1; i >= 0; i--){
-        if(strcmp(symbol_table[i].name,ident)==0){
-            return i;
-        }
-    }
-    return -1;
 }
